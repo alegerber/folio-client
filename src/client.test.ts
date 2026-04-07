@@ -18,7 +18,7 @@ function mockFetch(
   return vi.fn().mockResolvedValue({
     ok: status >= 200 && status < 300,
     status,
-    json: () => (isJson ? Promise.resolve(body) : Promise.reject()),
+    json: () => (isJson ? Promise.resolve(body) : Promise.reject(new Error("not json"))),
     text: () => Promise.resolve(String(body)),
     arrayBuffer: () =>
       Promise.resolve(new TextEncoder().encode("%PDF-stub").buffer),
@@ -154,9 +154,9 @@ describe("FolioClient", () => {
       const fetch = mockFetch(401, { message: "Unauthorized" });
       vi.stubGlobal("fetch", fetch);
 
-      const error = await client.get("any").catch((e) => e);
+      const error: unknown = await client.get("any").catch((e: unknown) => e);
       expect(error).toBeInstanceOf(FolioError);
-      expect(error.statusCode).toBe(401);
+      expect((error as FolioError).statusCode).toBe(401);
     });
   });
 
