@@ -1,0 +1,14 @@
+{
+  "entryPoints": ["src/index.ts"],
+  "out": "docs",
+  "name": "folio-client",
+  "includeVersion": true,
+  "readme": "README.md",
+  "navigationLinks": {
+    "GitHub": "https://github.com/alegerber/folio-client",
+    "Folio API": "https://github.com/alegerber/folio"
+  },
+  "excludePrivate": true,
+  "excludeInternal": true,
+  "groupOrder": ["Classes", "Interfaces", "Type Aliases", "*"]
+}
