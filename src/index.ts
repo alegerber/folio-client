@@ -12,4 +12,8 @@ export {
   type SplitRequest,
   type CompressRequest,
   type PdfARequest,
+  type ViewportOptions,
+  type ClipRegion,
+  type ScreenshotRequest,
+  type StoredImage,
 } from "./types.js";

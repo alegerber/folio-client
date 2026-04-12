@@ -6,7 +6,9 @@ import {
   GenerateRequest,
   MergeRequest,
   PdfARequest,
+  ScreenshotRequest,
   SplitRequest,
+  StoredImage,
   StoredPdf,
 } from "./types.js";
 
@@ -121,6 +123,18 @@ export class FolioClient {
     body: PdfARequest
   ): Promise<FolioResponse<StoredPdf> | Uint8Array> {
     return this.request("POST", "/pdf/pdfa", body, body.stream);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Screenshot
+  // ---------------------------------------------------------------------------
+
+  /** Render HTML or a URL as an image (PNG/JPEG/WebP). */
+  screenshot(body: ScreenshotRequest & { stream: true }): Promise<Uint8Array>;
+  screenshot(body: ScreenshotRequest & { stream?: false }): Promise<FolioResponse<StoredImage>>;
+  screenshot(body: ScreenshotRequest): Promise<FolioResponse<StoredImage> | Uint8Array>;
+  async screenshot(body: ScreenshotRequest): Promise<FolioResponse<StoredImage> | Uint8Array> {
+    return this.request('POST', '/screenshot', body, body.stream);
   }
 
   // ---------------------------------------------------------------------------

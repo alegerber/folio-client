@@ -58,6 +58,16 @@ describe("FolioClient", () => {
 
       expect(bytes).toBeInstanceOf(Uint8Array);
     });
+
+    it("accepts url instead of html", async () => {
+      const fetch = mockFetch(200, { statusCode: 200, data: MOCK_PDF });
+      vi.stubGlobal("fetch", fetch);
+
+      await client.generate({ url: "https://example.com" });
+
+      const [, init] = fetch.mock.calls[0] as [string, RequestInit];
+      expect(JSON.parse(init.body as string)).toMatchObject({ url: "https://example.com" });
+    });
   });
 
   describe("get", () => {
@@ -139,6 +149,34 @@ describe("FolioClient", () => {
 
       const [, init] = fetch.mock.calls[0] as [string, RequestInit];
       expect(JSON.parse(init.body as string)).toMatchObject({ conformance: "2b" });
+    });
+  });
+
+  describe("screenshot", () => {
+    const MOCK_IMAGE: import("./types.js").StoredImage = {
+      url: "https://s3.example.com/my.png?presigned=1",
+    };
+
+    it("posts to /screenshot and returns StoredImage", async () => {
+      const fetch = mockFetch(200, { statusCode: 200, data: MOCK_IMAGE });
+      vi.stubGlobal("fetch", fetch);
+
+      const result = await client.screenshot({ html: "<h1>Hi</h1>" });
+
+      expect(fetch).toHaveBeenCalledWith(
+        `${BASE_URL}/screenshot`,
+        expect.objectContaining({ method: "POST" })
+      );
+      expect(result).toEqual({ statusCode: 200, data: MOCK_IMAGE });
+    });
+
+    it("returns Uint8Array when stream: true", async () => {
+      const fetch = mockFetch(200, null, "image/png");
+      vi.stubGlobal("fetch", fetch);
+
+      const bytes = await client.screenshot({ url: "https://example.com", stream: true });
+
+      expect(bytes).toBeInstanceOf(Uint8Array);
     });
   });
 
