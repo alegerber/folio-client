@@ -25,10 +25,13 @@ export interface RenderOptions {
 }
 
 export interface GenerateRequest {
-  html: string;
+  html?: string;
+  url?: string;
   css?: string;
   paper?: PaperOptions;
   options?: RenderOptions;
+  cookies?: Array<{ name: string; value: string; domain: string }>;
+  extraHeaders?: Record<string, string>;
   /** When true the raw PDF bytes are returned instead of a storage URL. */
   stream?: boolean;
 }
@@ -58,6 +61,34 @@ export interface PdfARequest {
   id: string;
   conformance?: "1b" | "2b" | "3b";
   stream?: boolean;
+}
+
+export interface ViewportOptions {
+  width?: number;
+  height?: number;
+}
+
+export interface ClipRegion {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface ScreenshotRequest {
+  html?: string;
+  url?: string;
+  css?: string;
+  viewport?: ViewportOptions;
+  format?: 'png' | 'jpeg' | 'webp';
+  quality?: number;
+  fullPage?: boolean;
+  clip?: ClipRegion;
+  stream?: boolean;
+}
+
+export interface StoredImage {
+  url: string;
 }
 
 // ---------------------------------------------------------------------------

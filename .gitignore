@@ -1,10 +1,21 @@
+# Dependencies
 node_modules/
+
+# Build output
 dist/
 docs/
+
+# TypeScript
 *.tsbuildinfo
+
+# Environment
 .env
 .env.*
 !.env.example
 
-.DS_store
+# OS
+.DS_Store
+
+# Editor / tools
 .claude
+.plan
