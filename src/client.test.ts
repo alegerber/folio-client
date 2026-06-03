@@ -6,7 +6,6 @@ const BASE_URL = "http://localhost:8080";
 const MOCK_PDF: import("./types.js").StoredPdf = {
   id: "550e8400-e29b-41d4-a716-446655440000",
   url: "https://s3.example.com/my.pdf?presigned=1",
-  createdAt: "2024-01-01T00:00:00.000Z",
 };
 
 function mockFetch(
@@ -71,8 +70,9 @@ describe("FolioClient", () => {
   });
 
   describe("get", () => {
-    it("sends GET /pdf/:id", async () => {
-      const fetch = mockFetch(200, { statusCode: 200, data: MOCK_PDF });
+    it("sends GET /pdf/:id and returns a presigned URL ({ url } only)", async () => {
+      const data = { url: MOCK_PDF.url };
+      const fetch = mockFetch(200, { statusCode: 200, data });
       vi.stubGlobal("fetch", fetch);
 
       const result = await client.get(MOCK_PDF.id);
@@ -81,7 +81,22 @@ describe("FolioClient", () => {
         `${BASE_URL}/pdf/${MOCK_PDF.id}`,
         expect.objectContaining({ method: "GET" })
       );
-      expect(result).toEqual({ statusCode: 200, data: MOCK_PDF });
+      expect(result).toEqual({ statusCode: 200, data });
+    });
+  });
+
+  describe("health", () => {
+    it("returns the status payload (not wrapped in FolioResponse)", async () => {
+      const fetch = mockFetch(200, { status: "ok" });
+      vi.stubGlobal("fetch", fetch);
+
+      const result = await client.health();
+
+      expect(fetch).toHaveBeenCalledWith(
+        `${BASE_URL}/health`,
+        expect.objectContaining({ method: "GET" })
+      );
+      expect(result).toEqual({ status: "ok" });
     });
   });
 
