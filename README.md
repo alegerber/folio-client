@@ -85,8 +85,10 @@ const { data } = await folio.pdfA({ id, conformance: "2b" });
 
 ### Health check
 
+`/health` is public — it never requires the API key, even when one is configured.
+
 ```ts
-await folio.health();
+const { status } = await folio.health();  // { status: "ok" }
 ```
 
 ## API reference
