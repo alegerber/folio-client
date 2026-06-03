@@ -27,3 +27,9 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
+
+      # Validate the published artifact actually resolves: publint checks the
+      # exports/main/module wiring, attw checks the per-condition type maps.
+      # These catch exports/.mjs-style breakage that lint/typecheck/test miss.
+      - run: npx --yes publint
+      - run: npx --yes @arethetypeswrong/cli --pack
