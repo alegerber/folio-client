@@ -38,7 +38,13 @@ export class FolioClient {
 
   constructor(options: FolioClientOptions) {
     // Strip any number of trailing slashes so `baseUrl + path` never doubles up.
-    this.baseUrl = options.baseUrl.replace(/\/+$/, "");
+    // A manual trim (not a `/\/+$/` regex) avoids polynomial backtracking on
+    // long slash runs — CodeQL js/polynomial-redos.
+    let end = options.baseUrl.length;
+    while (end > 0 && options.baseUrl.charCodeAt(end - 1) === 47 /* "/" */) {
+      end--;
+    }
+    this.baseUrl = options.baseUrl.slice(0, end);
     this.timeout = options.timeout ?? 30_000;
     this.apiKey = options.apiKey;
   }

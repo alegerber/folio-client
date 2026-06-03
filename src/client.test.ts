@@ -305,6 +305,19 @@ describe("FolioClient", () => {
     });
   });
 
+  describe("baseUrl normalization", () => {
+    it("strips trailing slashes so the path is not doubled", async () => {
+      const fetch = mockFetch(200, { status: "ok" });
+      vi.stubGlobal("fetch", fetch);
+
+      const c = new FolioClient({ baseUrl: "http://localhost:8080///" });
+      await c.health();
+
+      const [url] = fetch.mock.calls[0] as [string];
+      expect(url).toBe("http://localhost:8080/health");
+    });
+  });
+
   describe("timeout & network errors", () => {
     afterEach(() => {
       vi.useRealTimers();
