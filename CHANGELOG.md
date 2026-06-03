@@ -4,13 +4,15 @@ All notable changes to `folio-client` are documented here. The format is based o
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2.0.0] - 2026-06-03
+## [1.2.0] - 2026-06-03
 
-Types brought in line with the current Folio server contract. **Runtime
-behaviour is unchanged** — these are type corrections, but because exported
-types changed, this is a major release.
+Types brought in line with the current Folio server contract; version aligned
+with the Folio server (1.2.0). **Runtime behaviour is unchanged** — these are
+type corrections. The exported-type changes below can be source-breaking for
+TypeScript consumers; kept as a minor because the package is unpublished, so no
+release was pinned to it.
 
-### Changed (breaking)
+### Changed (type corrections — may be source-breaking for TS consumers)
 - `paper.size` is now the `PaperSize` enum (`A4 | A3 | Letter | Legal | Tabloid`)
   instead of `string`, matching the server's enum validation.
 - `StoredPdf` is now `{ id, url }` — removed `createdAt` (previously declared
