@@ -40,6 +40,9 @@
   ],
   "type": "module",
   "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "eslint": "^10.2.0",

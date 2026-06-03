@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FolioClient } from "./client.js";
-import { FolioError } from "./types.js";
+import { FolioError, FolioNetworkError, FolioTimeoutError } from "./types.js";
 
 const BASE_URL = "http://localhost:8080";
 const MOCK_PDF: import("./types.js").StoredPdf = {
@@ -8,20 +8,28 @@ const MOCK_PDF: import("./types.js").StoredPdf = {
   url: "https://s3.example.com/my.pdf?presigned=1",
 };
 
+// Build a *real* WHATWG Response so json()/text()/arrayBuffer() share one body
+// stream — exactly like undici in production. A hand-rolled mock with three
+// independent body functions cannot reproduce single-stream consumption and so
+// silently hides double-read bugs.
 function mockFetch(
   status: number,
   body: unknown,
   contentType = "application/json"
 ) {
   const isJson = contentType.includes("application/json");
-  return vi.fn().mockResolvedValue({
-    ok: status >= 200 && status < 300,
-    status,
-    json: () => (isJson ? Promise.resolve(body) : Promise.reject(new Error("not json"))),
-    text: () => Promise.resolve(String(body)),
-    arrayBuffer: () =>
-      Promise.resolve(new TextEncoder().encode("%PDF-stub").buffer),
-  } as unknown as Response);
+  const hasBody = body !== null && body !== undefined && status !== 204;
+  let payload: string | null = null;
+  if (hasBody) {
+    // JSON bodies are serialized; non-JSON test bodies are passed through as-is
+    // (they are always strings), avoiding String(unknown) -> "[object Object]".
+    payload = !isJson && typeof body === "string" ? body : JSON.stringify(body);
+  }
+  return vi
+    .fn()
+    .mockResolvedValue(
+      new Response(payload, { status, headers: { "content-type": contentType } })
+    );
 }
 
 describe("FolioClient", () => {
@@ -50,12 +58,13 @@ describe("FolioClient", () => {
     });
 
     it("returns Uint8Array when stream: true", async () => {
-      const fetch = mockFetch(200, null, "application/pdf");
+      const fetch = mockFetch(200, "%PDF-1.4 stub bytes", "application/pdf");
       vi.stubGlobal("fetch", fetch);
 
       const bytes = await client.generate({ html: "<h1>Hi</h1>", stream: true });
 
       expect(bytes).toBeInstanceOf(Uint8Array);
+      expect(bytes.length).toBeGreaterThan(0);
     });
 
     it("accepts url instead of html", async () => {
@@ -186,12 +195,13 @@ describe("FolioClient", () => {
     });
 
     it("returns Uint8Array when stream: true", async () => {
-      const fetch = mockFetch(200, null, "image/png");
+      const fetch = mockFetch(200, "\x89PNG stub bytes", "image/png");
       vi.stubGlobal("fetch", fetch);
 
       const bytes = await client.screenshot({ url: "https://example.com", stream: true });
 
       expect(bytes).toBeInstanceOf(Uint8Array);
+      expect(bytes.length).toBeGreaterThan(0);
     });
   });
 
@@ -235,6 +245,152 @@ describe("FolioClient", () => {
 
       const [, init] = fetch.mock.calls[0] as [string, RequestInit];
       expect((init.headers as Record<string, string>)["X-Api-Key"]).toBeUndefined();
+    });
+
+    it("does NOT send X-Api-Key to the public /health endpoint", async () => {
+      const fetch = mockFetch(200, { status: "ok" });
+      vi.stubGlobal("fetch", fetch);
+
+      await client.health();
+
+      const [, init] = fetch.mock.calls[0] as [string, RequestInit];
+      expect((init.headers as Record<string, string>)["X-Api-Key"]).toBeUndefined();
+    });
+  });
+
+  describe("non-JSON / empty bodies", () => {
+    it("throws FolioError (not a raw TypeError) when an error body is not JSON", async () => {
+      const fetch = mockFetch(502, "<html>Bad Gateway</html>", "text/html");
+      vi.stubGlobal("fetch", fetch);
+
+      const err: unknown = await client
+        .generate({ html: "<h1>x</h1>" })
+        .catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(FolioError);
+      expect((err as FolioError).statusCode).toBe(502);
+    });
+
+    it("throws FolioError (not a raw SyntaxError) on an empty 2xx JSON body", async () => {
+      const fetch = mockFetch(200, null);
+      vi.stubGlobal("fetch", fetch);
+
+      const err: unknown = await client.get("some-id").catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(FolioError);
+    });
+  });
+
+  describe("request headers", () => {
+    it("sends an Accept header", async () => {
+      const fetch = mockFetch(200, { statusCode: 200, data: MOCK_PDF });
+      vi.stubGlobal("fetch", fetch);
+
+      await client.get(MOCK_PDF.id);
+
+      const [, init] = fetch.mock.calls[0] as [string, RequestInit];
+      expect((init.headers as Record<string, string>)["Accept"]).toBeDefined();
+    });
+  });
+
+  describe("stream flag typing", () => {
+    it("accepts stream: undefined and resolves to a FolioResponse", async () => {
+      const fetch = mockFetch(200, { statusCode: 200, data: MOCK_PDF });
+      vi.stubGlobal("fetch", fetch);
+
+      // Must compile under exactOptionalPropertyTypes (verified by `npm run typecheck`).
+      const result = await client.generate({ html: "<h1>x</h1>", stream: undefined });
+
+      expect(result).toEqual({ statusCode: 200, data: MOCK_PDF });
+    });
+  });
+
+  describe("baseUrl normalization", () => {
+    it("strips trailing slashes so the path is not doubled", async () => {
+      const fetch = mockFetch(200, { status: "ok" });
+      vi.stubGlobal("fetch", fetch);
+
+      const c = new FolioClient({ baseUrl: "http://localhost:8080///" });
+      await c.health();
+
+      const [url] = fetch.mock.calls[0] as [string];
+      expect(url).toBe("http://localhost:8080/health");
+    });
+  });
+
+  describe("timeout & network errors", () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("throws FolioTimeoutError when the request exceeds the timeout", async () => {
+      vi.useFakeTimers();
+      const fetch = vi.fn((_url: string, init: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init.signal?.addEventListener("abort", () =>
+            reject(new DOMException("This operation was aborted", "AbortError"))
+          );
+        })
+      );
+      vi.stubGlobal("fetch", fetch);
+
+      const fast = new FolioClient({ baseUrl: BASE_URL, timeout: 1000 });
+      const p = fast.get("id");
+      const assertion = expect(p).rejects.toBeInstanceOf(FolioTimeoutError);
+      await vi.advanceTimersByTimeAsync(1001);
+      await assertion;
+    });
+
+    it("covers the body download with the timeout (aborts a stalled body)", async () => {
+      vi.useFakeTimers();
+      // fetch resolves on headers, but the body read never settles until abort.
+      const fetch = vi.fn((_url: string, init: RequestInit) =>
+        Promise.resolve({
+          ok: true,
+          status: 200,
+          arrayBuffer: () =>
+            new Promise((_res, reject) => {
+              init.signal?.addEventListener("abort", () =>
+                reject(new DOMException("aborted", "AbortError"))
+              );
+            }),
+        } as unknown as Response)
+      );
+      vi.stubGlobal("fetch", fetch);
+
+      const fast = new FolioClient({ baseUrl: BASE_URL, timeout: 1000 });
+      const p = fast.get("id");
+      const assertion = expect(p).rejects.toBeInstanceOf(FolioTimeoutError);
+      await vi.advanceTimersByTimeAsync(1001);
+      await assertion;
+    });
+
+    it("wraps a fetch network failure in FolioNetworkError", async () => {
+      const fetch = vi.fn().mockRejectedValue(new TypeError("fetch failed"));
+      vi.stubGlobal("fetch", fetch);
+
+      const err: unknown = await client.get("id").catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(FolioNetworkError);
+    });
+
+    it("rethrows a caller-initiated abort as a native AbortError (not FolioTimeoutError)", async () => {
+      const fetch = vi.fn((_url: string, init: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init.signal?.addEventListener("abort", () =>
+            reject(new DOMException("aborted", "AbortError"))
+          );
+        })
+      );
+      vi.stubGlobal("fetch", fetch);
+
+      const ac = new AbortController();
+      const settled = client.get("id", { signal: ac.signal }).catch((e: unknown) => e);
+      ac.abort();
+      const err = await settled;
+
+      expect(err).not.toBeInstanceOf(FolioError);
+      expect((err as Error).name).toBe("AbortError");
     });
   });
 });

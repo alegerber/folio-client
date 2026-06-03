@@ -40,13 +40,13 @@ export interface GenerateRequest {
   /** Extra request headers. Server limit: header value ≤ 8,192 chars each. */
   extraHeaders?: Record<string, string>;
   /** When true the raw PDF bytes are returned instead of a storage URL. */
-  stream?: boolean;
+  stream?: boolean | undefined;
 }
 
 export interface MergeRequest {
   /** 2 – 20 PDF IDs previously stored via generate/merge/etc. */
   ids: [string, string, ...string[]];
-  stream?: boolean;
+  stream?: boolean | undefined;
 }
 
 export interface SplitRequest {
@@ -56,18 +56,18 @@ export interface SplitRequest {
    * Consult the Folio docs for the exact syntax accepted by Ghostscript.
    */
   pages: string;
-  stream?: boolean;
+  stream?: boolean | undefined;
 }
 
 export interface CompressRequest {
   id: string;
-  stream?: boolean;
+  stream?: boolean | undefined;
 }
 
 export interface PdfARequest {
   id: string;
   conformance?: "1b" | "2b" | "3b";
-  stream?: boolean;
+  stream?: boolean | undefined;
 }
 
 export interface ViewportOptions {
@@ -91,7 +91,7 @@ export interface ScreenshotRequest {
   quality?: number;
   fullPage?: boolean;
   clip?: ClipRegion;
-  stream?: boolean;
+  stream?: boolean | undefined;
 }
 
 export interface StoredImage {
@@ -139,6 +139,17 @@ export interface FolioClientOptions {
   timeout?: number;
 }
 
+/** Per-call options accepted as the trailing argument of every client method. */
+export interface FolioRequestOptions {
+  /**
+   * Caller-side cancellation. Combined with the client's internal timeout, so
+   * either the caller or the timeout can abort the request. A caller-initiated
+   * abort surfaces as the native `AbortError`; only the timeout is wrapped in
+   * a {@link FolioTimeoutError}.
+   */
+  signal?: AbortSignal;
+}
+
 // ---------------------------------------------------------------------------
 // Error type
 // ---------------------------------------------------------------------------
@@ -151,5 +162,32 @@ export class FolioError extends Error {
   ) {
     super(message);
     this.name = "FolioError";
+  }
+}
+
+/**
+ * Thrown when a request exceeds the configured `timeout`. A subclass of
+ * {@link FolioError} with `statusCode === 0`, so `instanceof FolioError` still
+ * matches while `instanceof FolioTimeoutError` lets callers detect timeouts.
+ */
+export class FolioTimeoutError extends FolioError {
+  constructor(
+    message: string,
+    public readonly timeoutMs: number
+  ) {
+    super(message, 0, undefined);
+    this.name = "FolioTimeoutError";
+  }
+}
+
+/**
+ * Thrown when the request fails at the network layer (DNS, connection refused,
+ * TLS) before any HTTP status is available. A subclass of {@link FolioError}
+ * with `statusCode === 0`; the underlying cause is available on `.body`.
+ */
+export class FolioNetworkError extends FolioError {
+  constructor(message: string, cause: unknown) {
+    super(message, 0, cause);
+    this.name = "FolioNetworkError";
   }
 }
