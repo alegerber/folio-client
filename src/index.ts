@@ -1,7 +1,10 @@
 export { FolioClient } from "./client.js";
 export {
   FolioError,
+  FolioTimeoutError,
+  FolioNetworkError,
   type FolioClientOptions,
+  type FolioRequestOptions,
   type FolioResponse,
   type StoredPdf,
   type StoredUrl,
