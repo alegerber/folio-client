@@ -10,6 +10,7 @@ import {
   SplitRequest,
   StoredImage,
   StoredPdf,
+  StoredUrl,
 } from "./types.js";
 
 /**
@@ -61,9 +62,9 @@ export class FolioClient {
   // PDF retrieval & deletion
   // ---------------------------------------------------------------------------
 
-  /** Retrieve a stored PDF by ID. Returns the presigned URL object. */
-  async get(id: string): Promise<FolioResponse<StoredPdf>> {
-    return this.request("GET", `/pdf/${encodeURIComponent(id)}`) as Promise<FolioResponse<StoredPdf>>;
+  /** Retrieve a fresh presigned URL for a stored PDF by ID. */
+  async get(id: string): Promise<FolioResponse<StoredUrl>> {
+    return this.request("GET", `/pdf/${encodeURIComponent(id)}`) as Promise<FolioResponse<StoredUrl>>;
   }
 
   /** Delete a stored PDF by ID. */
@@ -141,9 +142,13 @@ export class FolioClient {
   // Utility
   // ---------------------------------------------------------------------------
 
-  /** Check service health. Returns HTTP 200 when healthy. */
-  async health(): Promise<unknown> {
-    return this.request("GET", "/health");
+  /**
+   * Check service health. `/health` is public — it never requires the API key,
+   * even when the server has one configured.
+   */
+  async health(): Promise<{ status: string }> {
+    const response = await this.requestRaw("GET", "/health");
+    return (await response.json()) as { status: string };
   }
 
   // ---------------------------------------------------------------------------

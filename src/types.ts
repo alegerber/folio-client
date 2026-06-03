@@ -2,9 +2,11 @@
 // Request types
 // ---------------------------------------------------------------------------
 
+/** Paper sizes accepted by the Folio server (validated as an enum). */
+export type PaperSize = "A4" | "A3" | "Letter" | "Legal" | "Tabloid";
+
 export interface PaperOptions {
-  /** e.g. "A4", "Letter", "Legal" */
-  size?: string;
+  size?: PaperSize;
   orientation?: "portrait" | "landscape";
 }
 
@@ -25,12 +27,17 @@ export interface RenderOptions {
 }
 
 export interface GenerateRequest {
+  /** Raw HTML to render. Server limit: 1–2,000,000 chars. Mutually exclusive with `url`. */
   html?: string;
+  /** URL to navigate to and render. Mutually exclusive with `html`. Subject to server SSRF policy. */
   url?: string;
+  /** Extra CSS injected before rendering. Server limit: ≤ 500,000 chars. */
   css?: string;
   paper?: PaperOptions;
   options?: RenderOptions;
+  /** Cookies set before navigation. Server limit: ≤ 50 entries. */
   cookies?: Array<{ name: string; value: string; domain: string }>;
+  /** Extra request headers. Server limit: header value ≤ 8,192 chars each. */
   extraHeaders?: Record<string, string>;
   /** When true the raw PDF bytes are returned instead of a storage URL. */
   stream?: boolean;
@@ -99,10 +106,13 @@ export interface StoredPdf {
   id: string;
   /** Presigned S3 URL to download the PDF. */
   url: string;
-  /** ISO timestamp */
-  createdAt: string;
-  /** File size in bytes */
-  size?: number;
+}
+
+/**
+ * Response of `get(id)`: the server issues a fresh presigned URL only (no id).
+ */
+export interface StoredUrl {
+  url: string;
 }
 
 export interface FolioResponse<T> {

@@ -49,7 +49,7 @@ const bytes = await folio.generate({ html: "<h1>Hello</h1>", stream: true });
 ### Retrieve / delete a stored PDF
 
 ```ts
-const { data } = await folio.get(id);   // returns StoredPdf with presigned URL
+const { data } = await folio.get(id);   // { url } — a fresh presigned URL
 await folio.delete(id);                  // 204 No Content
 ```
 
@@ -101,7 +101,7 @@ await folio.health();
 
 ### Methods
 
-All methods return `Promise<FolioResponse<StoredPdf>>` by default, or `Promise<Uint8Array>` when `stream: true` is passed. TypeScript infers the correct return type automatically.
+The PDF-producing methods (`generate`, `merge`, `split`, `compress`, `pdfA`) return `Promise<FolioResponse<StoredPdf>>` (`{ id, url }`), or `Promise<Uint8Array>` when `stream: true`. `get(id)` returns `FolioResponse<StoredUrl>` (`{ url }`), `screenshot` returns `FolioResponse<StoredImage>` (or bytes when streaming), `delete` resolves to `void`, and `health()` returns `{ status }`. TypeScript infers the correct return type automatically.
 
 | Method | Endpoint |
 |--------|----------|
