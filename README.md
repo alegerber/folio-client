@@ -39,11 +39,18 @@ console.log(data.url);  // presigned S3 URL
 console.log(data.id);   // UUID for subsequent operations
 ```
 
-Return the raw PDF bytes directly (buffered in memory) instead:
+Provide exactly one of `html` or `url` — the types enforce it (supplying both, or
+neither, is a compile error).
+
+Stream the raw PDF bytes (`ReadableStream<Uint8Array>`); buffer with `collect` if you
+want all the bytes in memory:
 
 ```ts
-const bytes = await folio.generate({ html: "<h1>Hello</h1>", stream: true });
-// bytes is a Uint8Array
+import { collect } from "folio-client";
+
+const stream = await folio.generateStream({ html: "<h1>Hello</h1>" });
+// pipe `stream` to a file/HTTP response, or buffer it:
+const bytes = await collect(stream);  // Uint8Array
 ```
 
 Render a remote URL instead of inline HTML — with optional cookies and headers for authenticated pages:
@@ -95,7 +102,7 @@ const { data } = await folio.pdfA({ id, conformance: "2b" });
 
 ### Screenshot
 
-Render HTML or a URL to an image (PNG/JPEG/WebP) — store it and get a URL, or stream the bytes:
+Render HTML or a URL to an image (PNG/JPEG/WebP) — store it and get a URL, or stream the raw bytes:
 
 ```ts
 const { data } = await folio.screenshot({
@@ -106,8 +113,8 @@ const { data } = await folio.screenshot({
 });
 console.log(data.url);  // presigned S3 URL
 
-const bytes = await folio.screenshot({ html: "<h1>Hi</h1>", stream: true });
-// bytes is a Uint8Array
+const stream = await folio.screenshotStream({ html: "<h1>Hi</h1>" });
+// stream is a ReadableStream<Uint8Array>
 ```
 
 ### Health check
@@ -127,22 +134,23 @@ const { status } = await folio.health();  // { status: "ok" }
 | `baseUrl` | `string` | Base URL of your Folio instance |
 | `apiKey` | `string?` | Sent as `X-Api-Key`; required only when the server has `API_KEY` set |
 | `timeout` | `number?` | Request timeout in ms (default: `30_000`) |
+| `retry` | `RetryOptions \| false?` | Retry policy for `429`/`503` + transient network errors (default: 2 retries, exponential backoff + jitter, honors `Retry-After`). `false` disables |
 
 ### Methods
 
-The PDF-producing methods (`generate`, `merge`, `split`, `compress`, `pdfA`) return `Promise<FolioResponse<StoredPdf>>` (`{ id, url }`), or `Promise<Uint8Array>` when `stream: true`. `get(id)` returns `FolioResponse<StoredUrl>` (`{ url }`), `screenshot` returns `FolioResponse<StoredImage>` (or bytes when streaming), `delete` resolves to `void`, and `health()` returns `{ status }`. TypeScript infers the correct return type automatically.
+The store-to-S3 methods (`generate`, `merge`, `split`, `compress`, `pdfA`) return `Promise<FolioResponse<StoredPdf>>` (`{ id, url }`). `get(id)` returns `FolioResponse<StoredUrl>` (`{ url }`), `screenshot` returns `FolioResponse<StoredImage>`, `delete` resolves to `void`, and `health()` returns `{ status }`. Each producing method has a `*Stream` counterpart returning `Promise<ReadableStream<Uint8Array>>` for the raw bytes — buffer one with `collect(stream)`.
 
-| Method | Endpoint |
-|--------|----------|
-| `generate(body)` | `POST /pdf/generate` |
-| `get(id)` | `GET /pdf/:id` |
-| `delete(id)` | `DELETE /pdf/:id` |
-| `merge(body)` | `POST /pdf/merge` |
-| `split(body)` | `POST /pdf/split` |
-| `compress(body)` | `POST /pdf/compress` |
-| `pdfA(body)` | `POST /pdf/pdfa` |
-| `screenshot(body)` | `POST /screenshot` |
-| `health()` | `GET /health` |
+| Method | Endpoint | Returns |
+|--------|----------|---------|
+| `generate(body)` / `generateStream(body)` | `POST /pdf/generate` | `FolioResponse<StoredPdf>` / `ReadableStream` |
+| `get(id)` | `GET /pdf/:id` | `FolioResponse<StoredUrl>` |
+| `delete(id)` | `DELETE /pdf/:id` | `void` |
+| `merge(body)` / `mergeStream(body)` | `POST /pdf/merge` | `FolioResponse<StoredPdf>` / `ReadableStream` |
+| `split(body)` / `splitStream(body)` | `POST /pdf/split` | `FolioResponse<StoredPdf>` / `ReadableStream` |
+| `compress(body)` / `compressStream(body)` | `POST /pdf/compress` | `FolioResponse<StoredPdf>` / `ReadableStream` |
+| `pdfA(body)` / `pdfAStream(body)` | `POST /pdf/pdfa` | `FolioResponse<StoredPdf>` / `ReadableStream` |
+| `screenshot(body)` / `screenshotStream(body)` | `POST /screenshot` | `FolioResponse<StoredImage>` / `ReadableStream` |
+| `health()` | `GET /health` | `{ status }` |
 
 ### Errors
 
@@ -179,6 +187,26 @@ const promise = folio.generate(
 );
 controller.abort();  // promise rejects with AbortError
 ```
+
+### Retries
+
+Transient failures (`429`/`503` and network errors) are retried automatically with
+exponential backoff + jitter; a `Retry-After` header is honored. Timeouts are never
+retried. Configure on the client or per call, or disable with `retry: false`:
+
+```ts
+const folio = new FolioClient({
+  baseUrl,
+  retry: { maxRetries: 3, retryOn: [429, 503, 504], baseDelayMs: 300 },
+});
+
+// override or disable for a single call (e.g. where a duplicate would matter):
+await folio.merge({ ids }, { retry: false });
+```
+
+> Note: a network-error retry is at-least-once — if a request was processed but the
+> response was lost, the retry can create a duplicate. Pass `retry: false` on calls
+> where that matters.
 
 ## Running Folio locally
 

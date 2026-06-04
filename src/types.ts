@@ -26,11 +26,23 @@ export interface RenderOptions {
   footerTemplate?: string;
 }
 
-export interface GenerateRequest {
-  /** Raw HTML to render. Server limit: 1–2,000,000 chars. Mutually exclusive with `url`. */
-  html?: string;
-  /** URL to navigate to and render. Mutually exclusive with `html`. Subject to server SSRF policy. */
-  url?: string;
+/**
+ * Exactly one of `html` / `url` must be provided. Encoded as a discriminated
+ * union so that supplying both — or neither — is a compile error.
+ */
+export type HtmlOrUrl =
+  | {
+      /** Raw HTML to render. Server limit: 1–2,000,000 chars. */
+      html: string;
+      url?: never;
+    }
+  | {
+      /** URL to navigate to and render. Subject to server SSRF policy. */
+      url: string;
+      html?: never;
+    };
+
+export interface GenerateOptions {
   /** Extra CSS injected before rendering. Server limit: ≤ 500,000 chars. */
   css?: string;
   paper?: PaperOptions;
@@ -39,9 +51,10 @@ export interface GenerateRequest {
   cookies?: Array<{ name: string; value: string; domain: string }>;
   /** Extra request headers. Server limit: header value ≤ 8,192 chars each. */
   extraHeaders?: Record<string, string>;
-  /** When true the raw PDF bytes are returned instead of a storage URL. */
-  stream?: boolean | undefined;
 }
+
+/** Body for `generate` / `generateStream`. Exactly one of `html`/`url` is required. */
+export type GenerateRequest = GenerateOptions & HtmlOrUrl;
 
 export interface MergeRequest {
   /**
@@ -49,7 +62,6 @@ export interface MergeRequest {
    * a minimum of 2; the upper bound of 20 is validated server-side.
    */
   ids: [string, string, ...string[]];
-  stream?: boolean | undefined;
 }
 
 export interface SplitRequest {
@@ -59,18 +71,15 @@ export interface SplitRequest {
    * Consult the Folio docs for the exact syntax accepted by Ghostscript.
    */
   pages: string;
-  stream?: boolean | undefined;
 }
 
 export interface CompressRequest {
   id: string;
-  stream?: boolean | undefined;
 }
 
 export interface PdfARequest {
   id: string;
   conformance?: "1b" | "2b" | "3b";
-  stream?: boolean | undefined;
 }
 
 export interface ViewportOptions {
@@ -87,25 +96,22 @@ export interface ClipRegion {
   height: number;
 }
 
-export interface ScreenshotRequest {
-  /** Raw HTML to render. Mutually exclusive with `url`. */
-  html?: string;
-  /** URL to navigate to and capture. Mutually exclusive with `html`. Subject to server SSRF policy. */
-  url?: string;
+export interface ScreenshotOptions {
   /** Extra CSS injected before rendering. */
   css?: string;
   viewport?: ViewportOptions;
   /** Image format. @default 'png' */
-  format?: 'png' | 'jpeg' | 'webp';
+  format?: "png" | "jpeg" | "webp";
   /** Quality 1–100; applies to `jpeg`/`webp` only (validated server-side). */
   quality?: number;
   /** Capture the full scrollable page instead of just the viewport. @default false */
   fullPage?: boolean;
   /** Capture only a sub-region of the rendered page. */
   clip?: ClipRegion;
-  /** When true the raw image bytes are returned instead of a storage URL. */
-  stream?: boolean | undefined;
 }
+
+/** Body for `screenshot` / `screenshotStream`. Exactly one of `html`/`url` is required. */
+export type ScreenshotRequest = ScreenshotOptions & HtmlOrUrl;
 
 export interface StoredImage {
   url: string;
@@ -137,6 +143,23 @@ export interface FolioResponse<T> {
 // Client config
 // ---------------------------------------------------------------------------
 
+/**
+ * Automatic retry of transient failures. Pass `false` (on the client or a
+ * single call) to disable.
+ */
+export interface RetryOptions {
+  /** Maximum retries after the first attempt. @default 2 */
+  maxRetries?: number;
+  /** HTTP status codes to retry. @default [429, 503] */
+  retryOn?: number[];
+  /** Honor a `Retry-After` response header when present. @default true */
+  respectRetryAfter?: boolean;
+  /** Base backoff in ms (exponential with jitter). @default 200 */
+  baseDelayMs?: number;
+  /** Upper bound for any single backoff wait, in ms. @default 10_000 */
+  maxDelayMs?: number;
+}
+
 export interface FolioClientOptions {
   /** Base URL of your Folio instance, e.g. "http://localhost:8080" */
   baseUrl: string;
@@ -150,6 +173,12 @@ export interface FolioClientOptions {
    * @default 30_000
    */
   timeout?: number;
+  /**
+   * Retry policy for transient failures (429/503 + network errors). Defaults to
+   * `{ maxRetries: 2, retryOn: [429, 503], respectRetryAfter: true }`. Pass
+   * `false` to disable retries entirely.
+   */
+  retry?: RetryOptions | false;
 }
 
 /** Per-call options accepted as the trailing argument of every client method. */
@@ -161,10 +190,15 @@ export interface FolioRequestOptions {
    * a {@link FolioTimeoutError}.
    */
   signal?: AbortSignal;
+  /**
+   * Override or disable retries for this call. Shallow-merged over the client's
+   * policy; `false` disables, an object re-enables even if the client disabled.
+   */
+  retry?: RetryOptions | false;
 }
 
 // ---------------------------------------------------------------------------
-// Error type
+// Error types
 // ---------------------------------------------------------------------------
 
 export class FolioError extends Error {
@@ -182,6 +216,7 @@ export class FolioError extends Error {
  * Thrown when a request exceeds the configured `timeout`. A subclass of
  * {@link FolioError} with `statusCode === 0`, so `instanceof FolioError` still
  * matches while `instanceof FolioTimeoutError` lets callers detect timeouts.
+ * Timeouts are never retried (the time budget is already spent).
  */
 export class FolioTimeoutError extends FolioError {
   constructor(
