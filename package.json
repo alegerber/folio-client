@@ -1,6 +1,6 @@
 {
   "name": "folio-client",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "TypeScript client for the Folio serverless PDF API",
   "main": "dist/index.cjs",
   "module": "dist/index.js",

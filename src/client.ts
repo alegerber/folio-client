@@ -9,12 +9,23 @@ import {
   GenerateRequest,
   MergeRequest,
   PdfARequest,
+  RetryOptions,
   ScreenshotRequest,
   SplitRequest,
   StoredImage,
   StoredPdf,
   StoredUrl,
 } from "./types.js";
+
+type ResolvedRetry = Required<RetryOptions>;
+
+const DEFAULT_RETRY: ResolvedRetry = {
+  maxRetries: 2,
+  retryOn: [429, 503],
+  respectRetryAfter: true,
+  baseDelayMs: 200,
+  maxDelayMs: 10_000,
+};
 
 /**
  * Client for the Folio serverless PDF API.
@@ -23,23 +34,23 @@ import {
  * ```ts
  * const folio = new FolioClient({ baseUrl: "http://localhost:8080" });
  *
- * // Store generated PDF in S3 and get a presigned URL back
- * const result = await folio.generate({ html: "<h1>Hello</h1>" });
- * console.log(result.data.url);
+ * // Store the PDF in S3 and get a presigned URL back
+ * const { data } = await folio.generate({ html: "<h1>Hello</h1>" });
  *
- * // Return the raw PDF bytes directly (buffered in memory)
- * const bytes = await folio.generate({ html: "<h1>Hello</h1>", stream: true });
+ * // Stream the raw PDF bytes (ReadableStream); buffer with collect() if needed
+ * const stream = await folio.generateStream({ html: "<h1>Hello</h1>" });
+ * const bytes = await collect(stream);
  * ```
  */
 export class FolioClient {
   private readonly baseUrl: string;
   private readonly apiKey: string | undefined;
   private readonly timeout: number;
+  private readonly retry: ResolvedRetry | null;
 
   constructor(options: FolioClientOptions) {
     // Strip any number of trailing slashes so `baseUrl + path` never doubles up.
-    // A manual trim (not a `/\/+$/` regex) avoids polynomial backtracking on
-    // long slash runs — CodeQL js/polynomial-redos.
+    // A manual trim (not a `/\/+$/` regex) avoids polynomial backtracking.
     let end = options.baseUrl.length;
     while (end > 0 && options.baseUrl.charCodeAt(end - 1) === 47 /* "/" */) {
       end--;
@@ -47,37 +58,27 @@ export class FolioClient {
     this.baseUrl = options.baseUrl.slice(0, end);
     this.timeout = options.timeout ?? 30_000;
     this.apiKey = options.apiKey;
+    this.retry = resolveRetry(DEFAULT_RETRY, options.retry);
   }
 
   // ---------------------------------------------------------------------------
   // PDF generation
   // ---------------------------------------------------------------------------
 
-  /** Generate a PDF from HTML/CSS. */
-  generate(
-    body: GenerateRequest & { stream: true },
-    options?: FolioRequestOptions
-  ): Promise<Uint8Array>;
-  generate(
-    body: GenerateRequest & { stream?: false },
-    options?: FolioRequestOptions
-  ): Promise<FolioResponse<StoredPdf>>;
-  generate(
-    body: GenerateRequest,
-    options?: FolioRequestOptions
-  ): Promise<FolioResponse<StoredPdf> | Uint8Array>;
+  /** Generate a PDF from HTML/CSS and store it; returns a presigned URL. */
   async generate(
     body: GenerateRequest,
     options?: FolioRequestOptions
-  ): Promise<FolioResponse<StoredPdf> | Uint8Array> {
-    return body.stream
-      ? this.requestStream("POST", "/pdf/generate", body, options)
-      : this.requestJson<FolioResponse<StoredPdf>>(
-          "POST",
-          "/pdf/generate",
-          body,
-          options
-        );
+  ): Promise<FolioResponse<StoredPdf>> {
+    return this.requestJson("POST", "/pdf/generate", body, options);
+  }
+
+  /** Generate a PDF and stream the raw bytes (`ReadableStream<Uint8Array>`). */
+  async generateStream(
+    body: GenerateRequest,
+    options?: FolioRequestOptions
+  ): Promise<ReadableStream<Uint8Array>> {
+    return this.fetchStream("POST", "/pdf/generate", body, options);
   }
 
   // ---------------------------------------------------------------------------
@@ -89,7 +90,7 @@ export class FolioClient {
     id: string,
     options?: FolioRequestOptions
   ): Promise<FolioResponse<StoredUrl>> {
-    return this.requestJson<FolioResponse<StoredUrl>>(
+    return this.requestJson(
       "GET",
       `/pdf/${encodeURIComponent(id)}`,
       undefined,
@@ -108,118 +109,88 @@ export class FolioClient {
   // PDF operations
   // ---------------------------------------------------------------------------
 
-  /** Merge 2–20 stored PDFs into one. */
-  merge(
-    body: MergeRequest & { stream: true },
-    options?: FolioRequestOptions
-  ): Promise<Uint8Array>;
-  merge(
-    body: MergeRequest & { stream?: false },
-    options?: FolioRequestOptions
-  ): Promise<FolioResponse<StoredPdf>>;
-  merge(
-    body: MergeRequest,
-    options?: FolioRequestOptions
-  ): Promise<FolioResponse<StoredPdf> | Uint8Array>;
+  /** Merge 2–20 stored PDFs into one; returns a presigned URL. */
   async merge(
     body: MergeRequest,
     options?: FolioRequestOptions
-  ): Promise<FolioResponse<StoredPdf> | Uint8Array> {
-    return body.stream
-      ? this.requestStream("POST", "/pdf/merge", body, options)
-      : this.requestJson<FolioResponse<StoredPdf>>("POST", "/pdf/merge", body, options);
+  ): Promise<FolioResponse<StoredPdf>> {
+    return this.requestJson("POST", "/pdf/merge", body, options);
   }
 
-  /** Extract a page range from a stored PDF. */
-  split(
-    body: SplitRequest & { stream: true },
+  /** Merge 2–20 stored PDFs and stream the raw bytes. */
+  async mergeStream(
+    body: MergeRequest,
     options?: FolioRequestOptions
-  ): Promise<Uint8Array>;
-  split(
-    body: SplitRequest & { stream?: false },
-    options?: FolioRequestOptions
-  ): Promise<FolioResponse<StoredPdf>>;
-  split(
-    body: SplitRequest,
-    options?: FolioRequestOptions
-  ): Promise<FolioResponse<StoredPdf> | Uint8Array>;
+  ): Promise<ReadableStream<Uint8Array>> {
+    return this.fetchStream("POST", "/pdf/merge", body, options);
+  }
+
+  /** Extract a page range from a stored PDF; returns a presigned URL. */
   async split(
     body: SplitRequest,
     options?: FolioRequestOptions
-  ): Promise<FolioResponse<StoredPdf> | Uint8Array> {
-    return body.stream
-      ? this.requestStream("POST", "/pdf/split", body, options)
-      : this.requestJson<FolioResponse<StoredPdf>>("POST", "/pdf/split", body, options);
+  ): Promise<FolioResponse<StoredPdf>> {
+    return this.requestJson("POST", "/pdf/split", body, options);
   }
 
-  /** Compress a stored PDF. Requires Ghostscript on the server. */
-  compress(
-    body: CompressRequest & { stream: true },
+  /** Extract a page range and stream the raw bytes. */
+  async splitStream(
+    body: SplitRequest,
     options?: FolioRequestOptions
-  ): Promise<Uint8Array>;
-  compress(
-    body: CompressRequest & { stream?: false },
-    options?: FolioRequestOptions
-  ): Promise<FolioResponse<StoredPdf>>;
-  compress(
-    body: CompressRequest,
-    options?: FolioRequestOptions
-  ): Promise<FolioResponse<StoredPdf> | Uint8Array>;
+  ): Promise<ReadableStream<Uint8Array>> {
+    return this.fetchStream("POST", "/pdf/split", body, options);
+  }
+
+  /** Compress a stored PDF (requires Ghostscript); returns a presigned URL. */
   async compress(
     body: CompressRequest,
     options?: FolioRequestOptions
-  ): Promise<FolioResponse<StoredPdf> | Uint8Array> {
-    return body.stream
-      ? this.requestStream("POST", "/pdf/compress", body, options)
-      : this.requestJson<FolioResponse<StoredPdf>>("POST", "/pdf/compress", body, options);
+  ): Promise<FolioResponse<StoredPdf>> {
+    return this.requestJson("POST", "/pdf/compress", body, options);
   }
 
-  /** Convert a stored PDF to PDF/A archival format. Requires Ghostscript on the server. */
-  pdfA(
-    body: PdfARequest & { stream: true },
+  /** Compress a stored PDF and stream the raw bytes. */
+  async compressStream(
+    body: CompressRequest,
     options?: FolioRequestOptions
-  ): Promise<Uint8Array>;
-  pdfA(
-    body: PdfARequest & { stream?: false },
-    options?: FolioRequestOptions
-  ): Promise<FolioResponse<StoredPdf>>;
-  pdfA(
-    body: PdfARequest,
-    options?: FolioRequestOptions
-  ): Promise<FolioResponse<StoredPdf> | Uint8Array>;
+  ): Promise<ReadableStream<Uint8Array>> {
+    return this.fetchStream("POST", "/pdf/compress", body, options);
+  }
+
+  /** Convert a stored PDF to PDF/A (requires Ghostscript); returns a presigned URL. */
   async pdfA(
     body: PdfARequest,
     options?: FolioRequestOptions
-  ): Promise<FolioResponse<StoredPdf> | Uint8Array> {
-    return body.stream
-      ? this.requestStream("POST", "/pdf/pdfa", body, options)
-      : this.requestJson<FolioResponse<StoredPdf>>("POST", "/pdf/pdfa", body, options);
+  ): Promise<FolioResponse<StoredPdf>> {
+    return this.requestJson("POST", "/pdf/pdfa", body, options);
+  }
+
+  /** Convert a stored PDF to PDF/A and stream the raw bytes. */
+  async pdfAStream(
+    body: PdfARequest,
+    options?: FolioRequestOptions
+  ): Promise<ReadableStream<Uint8Array>> {
+    return this.fetchStream("POST", "/pdf/pdfa", body, options);
   }
 
   // ---------------------------------------------------------------------------
   // Screenshot
   // ---------------------------------------------------------------------------
 
-  /** Render HTML or a URL as an image (PNG/JPEG/WebP). */
-  screenshot(
-    body: ScreenshotRequest & { stream: true },
-    options?: FolioRequestOptions
-  ): Promise<Uint8Array>;
-  screenshot(
-    body: ScreenshotRequest & { stream?: false },
-    options?: FolioRequestOptions
-  ): Promise<FolioResponse<StoredImage>>;
-  screenshot(
-    body: ScreenshotRequest,
-    options?: FolioRequestOptions
-  ): Promise<FolioResponse<StoredImage> | Uint8Array>;
+  /** Render HTML or a URL as an image and store it; returns a presigned URL. */
   async screenshot(
     body: ScreenshotRequest,
     options?: FolioRequestOptions
-  ): Promise<FolioResponse<StoredImage> | Uint8Array> {
-    return body.stream
-      ? this.requestStream("POST", "/screenshot", body, options)
-      : this.requestJson<FolioResponse<StoredImage>>("POST", "/screenshot", body, options);
+  ): Promise<FolioResponse<StoredImage>> {
+    return this.requestJson("POST", "/screenshot", body, options);
+  }
+
+  /** Render HTML or a URL as an image and stream the raw bytes. */
+  async screenshotStream(
+    body: ScreenshotRequest,
+    options?: FolioRequestOptions
+  ): Promise<ReadableStream<Uint8Array>> {
+    return this.fetchStream("POST", "/screenshot", body, options);
   }
 
   // ---------------------------------------------------------------------------
@@ -231,7 +202,7 @@ export class FolioClient {
    * key to it, even when one is configured.
    */
   async health(options?: FolioRequestOptions): Promise<{ status: string }> {
-    return this.requestJson<{ status: string }>("GET", "/health", undefined, options);
+    return this.requestJson("GET", "/health", undefined, options);
   }
 
   // ---------------------------------------------------------------------------
@@ -250,7 +221,7 @@ export class FolioClient {
     return headers;
   }
 
-  /** Perform a request and return the parsed JSON envelope. */
+  /** Perform a request (with retry) and return the parsed JSON envelope. */
   private async requestJson<T>(
     method: string,
     path: string,
@@ -260,11 +231,7 @@ export class FolioClient {
     const { status, bytes } = await this.send(method, path, body, options);
     const text = new TextDecoder().decode(bytes);
     if (!text.trim()) {
-      throw new FolioError(
-        `Folio returned an empty body: ${method} ${path}`,
-        status,
-        ""
-      );
+      throw new FolioError(`Folio returned an empty body: ${method} ${path}`, status, "");
     }
     try {
       return JSON.parse(text) as T;
@@ -277,26 +244,9 @@ export class FolioClient {
     }
   }
 
-  /** Perform a request and return the raw response bytes. */
-  private async requestStream(
-    method: string,
-    path: string,
-    body?: unknown,
-    options?: FolioRequestOptions
-  ): Promise<Uint8Array> {
-    const { bytes } = await this.send(method, path, body, options);
-    return bytes;
-  }
-
   /**
-   * Core transport: issues the request, reads the **entire** body while the
-   * timeout is still armed, and maps failures to typed errors:
-   * - the configured timeout → {@link FolioTimeoutError}
-   * - a caller-initiated abort → the native `AbortError` (rethrown as-is)
-   * - a network-layer failure → {@link FolioNetworkError}
-   * - a non-2xx response → {@link FolioError}
-   * The body is read exactly once (as bytes) so callers can decode it as JSON
-   * or binary without double-reading the stream.
+   * Buffered transport with retry: reads the whole body under the timeout, and
+   * retries transient failures (configured statuses + network errors).
    */
   private async send(
     method: string,
@@ -304,20 +254,60 @@ export class FolioClient {
     body?: unknown,
     options?: FolioRequestOptions
   ): Promise<{ status: number; bytes: Uint8Array }> {
+    const retry = effectiveRetry(this.retry, options?.retry);
+    let attempt = 0;
+    for (;;) {
+      attempt++;
+      let response: Response;
+      let bytes: Uint8Array;
+      try {
+        const out = await this.fetchOnce(method, path, body, options?.signal);
+        response = out.response;
+        bytes = out.bytes;
+      } catch (err) {
+        if (
+          err instanceof FolioNetworkError &&
+          retry &&
+          attempt <= retry.maxRetries
+        ) {
+          await sleep(computeDelayMs(retry, attempt - 1, undefined));
+          continue;
+        }
+        throw err; // timeout, caller-abort, or network error with no retries left
+      }
+
+      if (response.ok) return { status: response.status, bytes };
+
+      if (retry && attempt <= retry.maxRetries && retry.retryOn.includes(response.status)) {
+        await sleep(computeDelayMs(retry, attempt - 1, response));
+        continue;
+      }
+
+      throw new FolioError(
+        `Folio request failed: ${method} ${path} → ${response.status}`,
+        response.status,
+        decodeErrorBody(bytes)
+      );
+    }
+  }
+
+  /** One buffered attempt: fetch + full body read under the timeout, typed-error mapping. */
+  private async fetchOnce(
+    method: string,
+    path: string,
+    body: unknown,
+    signal: AbortSignal | undefined
+  ): Promise<{ response: Response; bytes: Uint8Array }> {
     const controller = new AbortController();
     let timedOut = false;
     const timer = setTimeout(() => {
       timedOut = true;
       controller.abort();
     }, this.timeout);
-
-    // Forward a caller signal onto our controller without AbortSignal.any
-    // (which is Node 20.3+); this keeps the Node floor at >=18.
-    const callerSignal = options?.signal;
     const onCallerAbort = () => controller.abort();
-    if (callerSignal) {
-      if (callerSignal.aborted) controller.abort();
-      else callerSignal.addEventListener("abort", onCallerAbort, { once: true });
+    if (signal) {
+      if (signal.aborted) controller.abort();
+      else signal.addEventListener("abort", onCallerAbort, { once: true });
     }
 
     try {
@@ -326,42 +316,172 @@ export class FolioClient {
         headers: this.buildHeaders(path),
         signal: controller.signal,
       };
-      if (body !== undefined) {
-        init.body = JSON.stringify(body);
-      }
+      if (body !== undefined) init.body = JSON.stringify(body);
 
       try {
         const response = await fetch(`${this.baseUrl}${path}`, init);
-
-        // Read the body under the still-armed timeout — fetch() resolves on
-        // response headers, so a slow/stalled body would otherwise be unbounded.
+        // Read the body under the still-armed timeout.
         const bytes = new Uint8Array(await response.arrayBuffer());
-
-        if (!response.ok) {
-          throw new FolioError(
-            `Folio request failed: ${method} ${path} → ${response.status}`,
-            response.status,
-            decodeErrorBody(bytes)
-          );
-        }
-
-        return { status: response.status, bytes };
+        return { response, bytes };
       } catch (err) {
-        if (err instanceof FolioError) throw err; // the non-2xx error above
         if (timedOut) {
           throw new FolioTimeoutError(
             `Folio request timed out after ${this.timeout}ms: ${method} ${path}`,
             this.timeout
           );
         }
-        if (callerSignal?.aborted) throw err; // caller cancellation → native AbortError
+        if (signal?.aborted) throw err; // caller cancellation → native AbortError
         throw new FolioNetworkError(`Folio network error: ${method} ${path}`, err);
       }
     } finally {
       clearTimeout(timer);
-      if (callerSignal) callerSignal.removeEventListener("abort", onCallerAbort);
+      if (signal) signal.removeEventListener("abort", onCallerAbort);
     }
   }
+
+  /**
+   * Streaming transport: retries the **initial** response (before any bytes are
+   * streamed), then returns `response.body`. The timeout bounds only the
+   * connect + headers phase — once headers arrive it is disarmed so it cannot
+   * kill a long-lived body; the caller's `signal` still cancels the stream.
+   */
+  private async fetchStream(
+    method: string,
+    path: string,
+    body: unknown,
+    options?: FolioRequestOptions
+  ): Promise<ReadableStream<Uint8Array>> {
+    const retry = effectiveRetry(this.retry, options?.retry);
+    const signal = options?.signal;
+    // The server returns raw bytes (instead of storing to S3) when stream is set.
+    const streamBody =
+      body !== undefined ? { ...(body as object), stream: true } : { stream: true };
+    let attempt = 0;
+    for (;;) {
+      attempt++;
+      const controller = new AbortController();
+      let timedOut = false;
+      const timer = setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+      }, this.timeout);
+      const onCallerAbort = () => controller.abort();
+      if (signal) {
+        if (signal.aborted) controller.abort();
+        else signal.addEventListener("abort", onCallerAbort, { once: true });
+      }
+
+      let response: Response;
+      try {
+        response = await fetch(`${this.baseUrl}${path}`, {
+          method,
+          headers: this.buildHeaders(path),
+          body: JSON.stringify(streamBody),
+          signal: controller.signal,
+        });
+      } catch (err) {
+        clearTimeout(timer);
+        if (signal) signal.removeEventListener("abort", onCallerAbort);
+        if (timedOut) {
+          throw new FolioTimeoutError(
+            `Folio request timed out after ${this.timeout}ms: ${method} ${path}`,
+            this.timeout
+          );
+        }
+        if (signal?.aborted) throw err;
+        if (retry && attempt <= retry.maxRetries) {
+          await sleep(computeDelayMs(retry, attempt - 1, undefined));
+          continue;
+        }
+        throw new FolioNetworkError(`Folio network error: ${method} ${path}`, err);
+      }
+
+      if (!response.ok) {
+        const bytes = new Uint8Array(await response.arrayBuffer());
+        clearTimeout(timer);
+        if (signal) signal.removeEventListener("abort", onCallerAbort);
+        if (
+          retry &&
+          attempt <= retry.maxRetries &&
+          retry.retryOn.includes(response.status)
+        ) {
+          await sleep(computeDelayMs(retry, attempt - 1, response));
+          continue;
+        }
+        throw new FolioError(
+          `Folio request failed: ${method} ${path} → ${response.status}`,
+          response.status,
+          decodeErrorBody(bytes)
+        );
+      }
+
+      // Headers arrived: disarm the timeout so it cannot abort the body mid-stream.
+      // Keep the caller-signal → controller link so the caller can still cancel.
+      clearTimeout(timer);
+      if (!response.body) {
+        if (signal) signal.removeEventListener("abort", onCallerAbort);
+        throw new FolioError(
+          `Folio returned no response body: ${method} ${path}`,
+          response.status,
+          ""
+        );
+      }
+      return response.body;
+    }
+  }
+}
+
+/** Buffer a `ReadableStream<Uint8Array>` (e.g. from `generateStream`) into a single `Uint8Array`. */
+export async function collect(
+  stream: ReadableStream<Uint8Array>
+): Promise<Uint8Array> {
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+
+/** Resolve the client-level retry config: `false` → disabled, else merge over defaults. */
+function resolveRetry(
+  defaults: ResolvedRetry,
+  opt: RetryOptions | false | undefined
+): ResolvedRetry | null {
+  if (opt === false) return null;
+  return { ...defaults, ...(opt ?? {}) };
+}
+
+/** Apply a per-call retry override over the client policy. */
+function effectiveRetry(
+  clientRetry: ResolvedRetry | null,
+  callRetry: RetryOptions | false | undefined
+): ResolvedRetry | null {
+  if (callRetry === undefined) return clientRetry;
+  if (callRetry === false) return null;
+  return { ...(clientRetry ?? DEFAULT_RETRY), ...callRetry };
+}
+
+/** Backoff for retry number `n` (0-based): Retry-After if present, else exponential + jitter. */
+function computeDelayMs(
+  retry: ResolvedRetry,
+  n: number,
+  response: Response | undefined
+): number {
+  if (retry.respectRetryAfter && response) {
+    const header = response.headers.get("retry-after");
+    if (header) {
+      const seconds = Number(header);
+      let ms: number | undefined;
+      if (Number.isFinite(seconds)) ms = seconds * 1000;
+      else {
+        const when = Date.parse(header);
+        if (!Number.isNaN(when)) ms = when - Date.now();
+      }
+      if (ms !== undefined && ms >= 0) return Math.min(ms, retry.maxDelayMs);
+    }
+  }
+  const exponential = Math.min(retry.baseDelayMs * 2 ** n, retry.maxDelayMs);
+  return exponential * (0.5 + Math.random() * 0.5); // jitter in [0.5, 1)
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /** Decode an error body once: parse as JSON when possible, else keep raw text. */

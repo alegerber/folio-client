@@ -1,14 +1,17 @@
-export { FolioClient } from "./client.js";
+export { FolioClient, collect } from "./client.js";
 export {
   FolioError,
   FolioTimeoutError,
   FolioNetworkError,
   type FolioClientOptions,
   type FolioRequestOptions,
+  type RetryOptions,
   type FolioResponse,
   type StoredPdf,
   type StoredUrl,
   type GenerateRequest,
+  type GenerateOptions,
+  type HtmlOrUrl,
   type PaperOptions,
   type PaperSize,
   type MarginOptions,
@@ -20,5 +23,6 @@ export {
   type ViewportOptions,
   type ClipRegion,
   type ScreenshotRequest,
+  type ScreenshotOptions,
   type StoredImage,
 } from "./types.js";

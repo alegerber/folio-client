@@ -4,31 +4,42 @@ All notable changes to `folio-client` are documented here. The format is based o
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.2.1] - 2026-06-04
+
+Kept a **patch** release despite the breaking API/type changes below: the package
+has no public consumers, so the breaking surface affects no one (a 2.0.0 bump would
+also break the convention that the client version tracks the Folio server).
 
 ### Added
-- `FolioTimeoutError` and `FolioNetworkError` (both extend `FolioError`, with
-  `statusCode === 0`) so timeouts and network failures are distinguishable from
-  HTTP errors via `instanceof`.
-- Per-call `options.signal` (`AbortSignal`) on every method for caller-side
-  cancellation, combined with the client timeout.
-- `engines: { node: ">=18" }`, package metadata (`repository`, `bugs`,
-  `homepage`, `author`), `sideEffects: false`, and `publint` +
-  `@arethetypeswrong/cli` in CI.
+- Streaming methods `generateStream` / `mergeStream` / `splitStream` /
+  `compressStream` / `pdfAStream` / `screenshotStream` — return
+  `ReadableStream<Uint8Array>` for true streaming of the raw bytes.
+- `collect(stream)` helper to buffer a `ReadableStream<Uint8Array>` into a `Uint8Array`.
+- Configurable retry/backoff via `FolioClientOptions.retry` and per-call
+  `options.retry`: retries `429`/`503` and transient network errors with exponential
+  backoff + jitter and `Retry-After` support (default `maxRetries: 2`). Timeouts are
+  never retried. Exported `RetryOptions`.
+- `FolioTimeoutError` and `FolioNetworkError` (extend `FolioError`, `statusCode === 0`)
+  so timeouts and network failures are distinguishable from HTTP errors via `instanceof`.
+- Per-call `options.signal` (`AbortSignal`) on every method.
+- `engines: { node: ">=18" }`, package metadata (`repository`, `bugs`, `homepage`,
+  `author`), `sideEffects: false`, and `publint` + `@arethetypeswrong/cli` in CI.
+
+### Changed (BREAKING — source-breaking for TS consumers; no public consumers exist)
+- `html`/`url` are now a discriminated union on `GenerateRequest` /
+  `ScreenshotRequest`: supplying **both** — or **neither** — is a compile error.
+- Removed the `stream` request field and the `stream`-discriminated overloads. Use the
+  `*Stream()` methods (with `collect()` to buffer) instead of `{ stream: true }`.
 
 ### Fixed
-- Non-JSON or empty error bodies now surface as `FolioError` instead of a raw
+- Non-JSON or empty error bodies surface as `FolioError` instead of a raw
   `TypeError`/`SyntaxError` — the response body is read exactly once.
-- The request timeout now covers the response **body download**, not just the
-  connect + headers phase.
-- `package.json` `exports`/`main`/`module` now resolve correctly for both ESM
-  `import` and CJS `require` (previously pointed at a non-existent `.mjs`).
+- The request timeout covers the response **body download** for buffered calls;
+  streaming calls bound only the connect + headers phase so a long body is not cut off.
+- `package.json` `exports`/`main`/`module` resolve correctly for both ESM `import`
+  and CJS `require` (previously pointed at a non-existent `.mjs`).
 - `X-Api-Key` is no longer sent to the public `/health` endpoint.
 - `baseUrl` trailing-slash normalization no longer uses a polynomial regex.
-
-### Changed
-- `stream` is now `boolean | undefined` on request types, so `stream: undefined`
-  compiles under `exactOptionalPropertyTypes`.
 
 ## [1.2.0] - 2026-06-03
 

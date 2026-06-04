@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { FolioClient } from "./client.js";
+import { FolioClient, collect } from "./client.js";
 import { FolioError, FolioNetworkError, FolioTimeoutError } from "./types.js";
 
 const BASE_URL = "http://localhost:8080";
@@ -25,10 +25,15 @@ function mockFetch(
     // (they are always strings), avoiding String(unknown) -> "[object Object]".
     payload = !isJson && typeof body === "string" ? body : JSON.stringify(body);
   }
+  // A new Response per call: a body stream can only be read once, so reusing a
+  // single instance would break any test that issues more than one request
+  // (retries, multiple calls) — exactly like real fetch, which returns fresh ones.
   return vi
     .fn()
-    .mockResolvedValue(
-      new Response(payload, { status, headers: { "content-type": contentType } })
+    .mockImplementation(() =>
+      Promise.resolve(
+        new Response(payload, { status, headers: { "content-type": contentType } })
+      )
     );
 }
 
@@ -57,14 +62,20 @@ describe("FolioClient", () => {
       expect(result).toEqual({ statusCode: 200, data: MOCK_PDF });
     });
 
-    it("returns Uint8Array when stream: true", async () => {
+    it("streams raw bytes via generateStream() and collect() round-trips them", async () => {
       const fetch = mockFetch(200, "%PDF-1.4 stub bytes", "application/pdf");
       vi.stubGlobal("fetch", fetch);
 
-      const bytes = await client.generate({ html: "<h1>Hi</h1>", stream: true });
+      const stream = await client.generateStream({ html: "<h1>Hi</h1>" });
+      expect(stream).toBeInstanceOf(ReadableStream);
 
+      const bytes = await collect(stream);
       expect(bytes).toBeInstanceOf(Uint8Array);
-      expect(bytes.length).toBeGreaterThan(0);
+      expect(new TextDecoder().decode(bytes)).toBe("%PDF-1.4 stub bytes");
+
+      // the client tells the server to stream raw bytes
+      const [, init] = fetch.mock.calls[0] as [string, RequestInit];
+      expect(JSON.parse(init.body as string)).toMatchObject({ stream: true });
     });
 
     it("accepts url instead of html", async () => {
@@ -194,14 +205,15 @@ describe("FolioClient", () => {
       expect(result).toEqual({ statusCode: 200, data: MOCK_IMAGE });
     });
 
-    it("returns Uint8Array when stream: true", async () => {
-      const fetch = mockFetch(200, "\x89PNG stub bytes", "image/png");
+    it("streams raw bytes via screenshotStream()", async () => {
+      const fetch = mockFetch(200, "PNG-stub-bytes", "image/png");
       vi.stubGlobal("fetch", fetch);
 
-      const bytes = await client.screenshot({ url: "https://example.com", stream: true });
+      const stream = await client.screenshotStream({ url: "https://example.com" });
+      expect(stream).toBeInstanceOf(ReadableStream);
 
-      expect(bytes).toBeInstanceOf(Uint8Array);
-      expect(bytes.length).toBeGreaterThan(0);
+      const bytes = await collect(stream);
+      expect(new TextDecoder().decode(bytes)).toBe("PNG-stub-bytes");
     });
   });
 
@@ -293,15 +305,19 @@ describe("FolioClient", () => {
     });
   });
 
-  describe("stream flag typing", () => {
-    it("accepts stream: undefined and resolves to a FolioResponse", async () => {
+  describe("request body typing (html/url discriminated union)", () => {
+    it("rejects both-set and neither-set at compile time; accepts a single field", async () => {
       const fetch = mockFetch(200, { statusCode: 200, data: MOCK_PDF });
       vi.stubGlobal("fetch", fetch);
 
-      // Must compile under exactOptionalPropertyTypes (verified by `npm run typecheck`).
-      const result = await client.generate({ html: "<h1>x</h1>", stream: undefined });
+      // @ts-expect-error — supplying both html and url is a compile error (#8)
+      await client.generate({ html: "<h1>x</h1>", url: "https://x" });
+      // @ts-expect-error — supplying neither html nor url is a compile error (#8)
+      await client.generate({});
 
-      expect(result).toEqual({ statusCode: 200, data: MOCK_PDF });
+      // valid single-field forms compile and resolve
+      await expect(client.generate({ html: "<h1>x</h1>" })).resolves.toBeDefined();
+      await expect(client.generate({ url: "https://x" })).resolves.toBeDefined();
     });
   });
 
@@ -369,7 +385,8 @@ describe("FolioClient", () => {
       const fetch = vi.fn().mockRejectedValue(new TypeError("fetch failed"));
       vi.stubGlobal("fetch", fetch);
 
-      const err: unknown = await client.get("id").catch((e: unknown) => e);
+      // retry: false so the assertion is about the error type, not the retry loop
+      const err: unknown = await client.get("id", { retry: false }).catch((e: unknown) => e);
 
       expect(err).toBeInstanceOf(FolioNetworkError);
     });
@@ -391,6 +408,116 @@ describe("FolioClient", () => {
 
       expect(err).not.toBeInstanceOf(FolioError);
       expect((err as Error).name).toBe("AbortError");
+    });
+  });
+
+  describe("retry", () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    const json = (obj: unknown, status = 200) =>
+      new Response(JSON.stringify(obj), {
+        status,
+        headers: { "content-type": "application/json" },
+      });
+    const OK_URL = { statusCode: 200, data: { url: MOCK_PDF.url } };
+
+    it("retries a 503 then succeeds", async () => {
+      vi.useFakeTimers();
+      const fetch = vi
+        .fn()
+        .mockResolvedValueOnce(new Response("busy", { status: 503 }))
+        .mockResolvedValueOnce(json(OK_URL));
+      vi.stubGlobal("fetch", fetch);
+
+      const p = client.get(MOCK_PDF.id);
+      await vi.advanceTimersByTimeAsync(5000);
+      const result = await p;
+
+      expect(fetch).toHaveBeenCalledTimes(2);
+      expect(result).toEqual(OK_URL);
+    });
+
+    it("gives up after maxRetries and throws the last FolioError", async () => {
+      vi.useFakeTimers();
+      const fetch = vi
+        .fn()
+        .mockImplementation(() => Promise.resolve(new Response("busy", { status: 503 })));
+      vi.stubGlobal("fetch", fetch);
+
+      const c = new FolioClient({
+        baseUrl: BASE_URL,
+        retry: { maxRetries: 2, baseDelayMs: 1 },
+      });
+      const settled = c.get("id").catch((e: unknown) => e);
+      await vi.advanceTimersByTimeAsync(5000);
+      const err = await settled;
+
+      expect(fetch).toHaveBeenCalledTimes(3); // 1 initial + 2 retries
+      expect(err).toBeInstanceOf(FolioError);
+      expect((err as FolioError).statusCode).toBe(503);
+    });
+
+    it("does not retry when retry: false on the call", async () => {
+      const fetch = vi.fn().mockResolvedValue(new Response("busy", { status: 503 }));
+      vi.stubGlobal("fetch", fetch);
+
+      await client.get("id", { retry: false }).catch(() => undefined);
+
+      expect(fetch).toHaveBeenCalledTimes(1);
+    });
+
+    it("retries a transient network error", async () => {
+      vi.useFakeTimers();
+      const fetch = vi
+        .fn()
+        .mockRejectedValueOnce(new TypeError("fetch failed"))
+        .mockResolvedValueOnce(json(OK_URL));
+      vi.stubGlobal("fetch", fetch);
+
+      const p = client.get(MOCK_PDF.id);
+      await vi.advanceTimersByTimeAsync(5000);
+      await p;
+
+      expect(fetch).toHaveBeenCalledTimes(2);
+    });
+
+    it("does not retry a timeout", async () => {
+      vi.useFakeTimers();
+      const fetch = vi.fn((_url: string, init: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init.signal?.addEventListener("abort", () =>
+            reject(new DOMException("aborted", "AbortError"))
+          );
+        })
+      );
+      vi.stubGlobal("fetch", fetch);
+
+      const c = new FolioClient({ baseUrl: BASE_URL, timeout: 100 });
+      const assertion = expect(c.get("id")).rejects.toBeInstanceOf(FolioTimeoutError);
+      await vi.advanceTimersByTimeAsync(5000);
+      await assertion;
+
+      expect(fetch).toHaveBeenCalledTimes(1); // timeouts are never retried
+    });
+
+    it("respects a Retry-After header", async () => {
+      vi.useFakeTimers();
+      const fetch = vi
+        .fn()
+        .mockResolvedValueOnce(
+          new Response("busy", { status: 503, headers: { "retry-after": "2" } })
+        )
+        .mockResolvedValueOnce(json(OK_URL));
+      vi.stubGlobal("fetch", fetch);
+
+      const p = client.get(MOCK_PDF.id);
+      await vi.advanceTimersByTimeAsync(1000); // < 2s: no retry yet
+      expect(fetch).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1500); // now past the 2s Retry-After
+      await p;
+      expect(fetch).toHaveBeenCalledTimes(2);
     });
   });
 });
