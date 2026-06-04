@@ -4,6 +4,32 @@ All notable changes to `folio-client` are documented here. The format is based o
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- `FolioTimeoutError` and `FolioNetworkError` (both extend `FolioError`, with
+  `statusCode === 0`) so timeouts and network failures are distinguishable from
+  HTTP errors via `instanceof`.
+- Per-call `options.signal` (`AbortSignal`) on every method for caller-side
+  cancellation, combined with the client timeout.
+- `engines: { node: ">=18" }`, package metadata (`repository`, `bugs`,
+  `homepage`, `author`), `sideEffects: false`, and `publint` +
+  `@arethetypeswrong/cli` in CI.
+
+### Fixed
+- Non-JSON or empty error bodies now surface as `FolioError` instead of a raw
+  `TypeError`/`SyntaxError` — the response body is read exactly once.
+- The request timeout now covers the response **body download**, not just the
+  connect + headers phase.
+- `package.json` `exports`/`main`/`module` now resolve correctly for both ESM
+  `import` and CJS `require` (previously pointed at a non-existent `.mjs`).
+- `X-Api-Key` is no longer sent to the public `/health` endpoint.
+- `baseUrl` trailing-slash normalization no longer uses a polynomial regex.
+
+### Changed
+- `stream` is now `boolean | undefined` on request types, so `stream: undefined`
+  compiles under `exactOptionalPropertyTypes`.
+
 ## [1.2.0] - 2026-06-03
 
 Types brought in line with the current Folio server contract; version aligned
