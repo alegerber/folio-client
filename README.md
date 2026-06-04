@@ -39,11 +39,21 @@ console.log(data.url);  // presigned S3 URL
 console.log(data.id);   // UUID for subsequent operations
 ```
 
-Stream the PDF bytes directly instead:
+Return the raw PDF bytes directly (buffered in memory) instead:
 
 ```ts
 const bytes = await folio.generate({ html: "<h1>Hello</h1>", stream: true });
 // bytes is a Uint8Array
+```
+
+Render a remote URL instead of inline HTML — with optional cookies and headers for authenticated pages:
+
+```ts
+const { data } = await folio.generate({
+  url: "https://example.com/invoice/42",
+  cookies: [{ name: "session", value: "…", domain: "example.com" }],
+  extraHeaders: { Authorization: "Bearer …" },
+});
 ```
 
 ### Retrieve / delete a stored PDF
@@ -83,9 +93,26 @@ Conformance levels: `"1b"`, `"2b"` (default), `"3b"`:
 const { data } = await folio.pdfA({ id, conformance: "2b" });
 ```
 
+### Screenshot
+
+Render HTML or a URL to an image (PNG/JPEG/WebP) — store it and get a URL, or stream the bytes:
+
+```ts
+const { data } = await folio.screenshot({
+  url: "https://example.com",
+  viewport: { width: 1280, height: 720 },
+  format: "png",
+  fullPage: true,
+});
+console.log(data.url);  // presigned S3 URL
+
+const bytes = await folio.screenshot({ html: "<h1>Hi</h1>", stream: true });
+// bytes is a Uint8Array
+```
+
 ### Health check
 
-`/health` is public — it never requires the API key, even when one is configured.
+`/health` is public — the client never sends the API key to it, even when one is configured.
 
 ```ts
 const { status } = await folio.health();  // { status: "ok" }
@@ -114,22 +141,43 @@ The PDF-producing methods (`generate`, `merge`, `split`, `compress`, `pdfA`) ret
 | `split(body)` | `POST /pdf/split` |
 | `compress(body)` | `POST /pdf/compress` |
 | `pdfA(body)` | `POST /pdf/pdfa` |
+| `screenshot(body)` | `POST /screenshot` |
 | `health()` | `GET /health` |
 
-### `FolioError`
+### Errors
 
-Thrown on non-2xx responses.
+Every failure throws a `FolioError` or one of its subclasses, so a single
+`instanceof FolioError` catches them all:
 
 ```ts
-import { FolioError } from "folio-client";
+import { FolioError, FolioTimeoutError, FolioNetworkError } from "folio-client";
 
 try {
   await folio.get("nonexistent-id");
 } catch (err) {
-  if (err instanceof FolioError) {
-    console.error(err.statusCode, err.body);
+  if (err instanceof FolioTimeoutError) {
+    // request exceeded `timeout` (statusCode 0)
+  } else if (err instanceof FolioNetworkError) {
+    // DNS / connection / TLS failure before any HTTP status (cause on err.body)
+  } else if (err instanceof FolioError) {
+    console.error(err.statusCode, err.body);  // non-2xx HTTP response
   }
 }
+```
+
+### Cancellation
+
+Every method accepts a trailing `options.signal` to cancel from the caller side
+(combined with the client timeout). A caller-initiated abort surfaces as the
+native `AbortError`; only the timeout becomes a `FolioTimeoutError`.
+
+```ts
+const controller = new AbortController();
+const promise = folio.generate(
+  { url: "https://slow.example" },
+  { signal: controller.signal }
+);
+controller.abort();  // promise rejects with AbortError
 ```
 
 ## Running Folio locally

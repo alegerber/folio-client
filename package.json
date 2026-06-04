@@ -39,7 +39,17 @@
     "html-to-pdf"
   ],
   "type": "module",
+  "sideEffects": false,
   "license": "MIT",
+  "author": "alegerber",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/alegerber/folio-client.git"
+  },
+  "bugs": {
+    "url": "https://github.com/alegerber/folio-client/issues"
+  },
+  "homepage": "https://github.com/alegerber/folio-client#readme",
   "engines": {
     "node": ">=18"
   },

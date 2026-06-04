@@ -19,7 +19,7 @@ export interface MarginOptions {
 
 export interface RenderOptions {
   margin?: MarginOptions;
-  /** 0.1 – 2.0 */
+  /** Render scale, 0.1 – 2.0 (validated server-side). */
   scale?: number;
   printBackground?: boolean;
   headerTemplate?: string;
@@ -44,7 +44,10 @@ export interface GenerateRequest {
 }
 
 export interface MergeRequest {
-  /** 2 – 20 PDF IDs previously stored via generate/merge/etc. */
+  /**
+   * PDF IDs previously stored via generate/merge/etc. The tuple type enforces
+   * a minimum of 2; the upper bound of 20 is validated server-side.
+   */
   ids: [string, string, ...string[]];
   stream?: boolean | undefined;
 }
@@ -71,7 +74,9 @@ export interface PdfARequest {
 }
 
 export interface ViewportOptions {
+  /** Viewport width in px, 1–3840 (default 1280). */
   width?: number;
+  /** Viewport height in px, 1–2160 (default 720). */
   height?: number;
 }
 
@@ -83,14 +88,22 @@ export interface ClipRegion {
 }
 
 export interface ScreenshotRequest {
+  /** Raw HTML to render. Mutually exclusive with `url`. */
   html?: string;
+  /** URL to navigate to and capture. Mutually exclusive with `html`. Subject to server SSRF policy. */
   url?: string;
+  /** Extra CSS injected before rendering. */
   css?: string;
   viewport?: ViewportOptions;
+  /** Image format. @default 'png' */
   format?: 'png' | 'jpeg' | 'webp';
+  /** Quality 1–100; applies to `jpeg`/`webp` only (validated server-side). */
   quality?: number;
+  /** Capture the full scrollable page instead of just the viewport. @default false */
   fullPage?: boolean;
+  /** Capture only a sub-region of the rendered page. */
   clip?: ClipRegion;
+  /** When true the raw image bytes are returned instead of a storage URL. */
   stream?: boolean | undefined;
 }
 
